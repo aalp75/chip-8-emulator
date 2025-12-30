@@ -6,22 +6,24 @@
 #include <string>
 #include <iomanip>
 #include <cstring> // memset
-
+#include <ctime>
+#include <chrono>
+#include "log.cpp"
 
 class Chip8 {
 
 public: // set all to public for now
 
     // constant
-    static constexpr int START_ADDRESS = 0x200; // (512);
-    static constexpr int FRAMEBUFFER_WIDTH  = 64;
-    static constexpr int FRAMEBUFER_HEIGHT = 32;
+    static constexpr unsigned int START_ADDRESS = 0x200; // (512);
+    static constexpr unsigned int FONTSET_START_ADDRESS = 0x50; // (80)
 
-    static const unsigned int FONTSET_SIZE = 80;
+    static constexpr unsigned int FRAMEBUFFER_WIDTH  = 64;
+    static constexpr unsigned int FRAMEBUFER_HEIGHT = 32;
 
-    static const unsigned int FONTSET_START_ADDRESS = 0x50;
+    static constexpr unsigned int FONTSET_SIZE = 80;
 
-    uint8_t fontset[FONTSET_SIZE] = {
+    static constexpr uint8_t fontset[FONTSET_SIZE] = {
         0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
         0x20, 0x60, 0x20, 0x20, 0x70, // 1
         0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
@@ -40,22 +42,25 @@ public: // set all to public for now
         0xF0, 0x80, 0xF0, 0x80, 0x80  // F
     };
 
-    uint8_t registers[16];   // 16 8 bit registers
-    uint8_t memory[4096];    // 4096b ytes of RAM
+    uint8_t registers[16];  // 16 1 byte registers
+    uint8_t memory[4096];   // 4096 bytes of RAM
 
-    uint16_t stack[16];      // Stack
+    uint16_t stack[16];     // Stack (16 bits because it's memory address)
 
-    uint16_t I;              // Pointer address
-    uint16_t PC;             // Program counter
-    uint8_t SP;              // Stack pointer
-    uint8_t delay_reg;       // Delay timer
-    uint8_t sound_reg;       // Sound timer
+    uint16_t I;             // Pointer address
+    uint16_t PC;            // Program counter (16 bits because 8 bits is too small)
+    uint8_t SP;             // Stack pointer
+
+    uint8_t delayTimer;     // Delay timer
+    uint8_t soundTimer;     // Sound timer
+
+    std::mt19937 rng;       // Random generator
 
     uint8_t framebuffer[FRAMEBUFFER_WIDTH * FRAMEBUFER_HEIGHT]; // Display Framebuffer Top-Left to Bottom-Right
 
 public:
 
-    Chip8() : PC(START_ADDRESS) {
+    Chip8() : PC(START_ADDRESS), rng(42) {
         for (unsigned int i = 0; i < FONTSET_SIZE; i++) {
             memory[FONTSET_START_ADDRESS + i] = fontset[i];
         }
@@ -76,6 +81,8 @@ public:
         if ((opcode & 0xF000) == 0x1000) { // JP addr (jump to location nnn)
             uint16_t address = opcode & 0x0FFF;
             PC = address;
+            logTimePrefix();
+            std::cout << "JP " << PC << '\n';
             return;
         }
 
@@ -84,33 +91,164 @@ public:
             stack[SP] = PC;
             SP++;
             PC = address;
+            logTimePrefix();
+            std::cout << "CALL " << address << '\n';
             return;
         }
 
         if ((opcode & 0xF000) == 0xA000) { // LD I, addr
             I = opcode & 0x0FFF;
+            logTimePrefix();
+            std::cout << "LD I " << I << '\n';
             return;
         }
 
-        if ((opcode & 0xF000) == 0x6000) { // LD, Vx, byte
+        if ((opcode & 0xF000) == 0x6000) { // LD Vx, byte
             uint8_t Vx = (opcode & 0xF00u) >> 8;
             uint8_t byte = opcode & 0x00FF;
+            logTimePrefix();
+            std::cout << "LD " << unsigned(Vx) << ", " << unsigned(byte) << '\n';
             registers[Vx] = byte;
             return;
         }
 
+        if ((opcode & 0xF000) == 0xD000) { // DRW Vx, Vy nibble
+            // display the n-byte sprite starting at memory location I at (Vx, Vy)
+            // set registers F = collision
+
+            uint8_t Vx = (opcode & 0x0F00) >> 8;
+            uint8_t Vy = (opcode & 0x00F0) >> 4;
+            uint8_t height = opcode & 0x000F;
+
+            logTimePrefix();
+            std::cout << "DRW " << unsigned(Vx) << ", " << unsigned(Vy) << ", " << unsigned(height) << '\n';
+
+            uint8_t xPos = registers[Vx];
+            uint8_t yPos = registers[Vy];
+
+            registers[0xF] = 0;
+
+            for (unsigned int row = 0; row < height; row++) {
+                uint8_t sprite = memory[I + row];
+                for (unsigned int bit = 0; bit < 8; bit++) {
+                    if (sprite & (0x80 >> bit)) {
+                        int px = (xPos + bit) % 64;
+                        int py = (yPos + row) % 32;
+                        int idx = py * 64 + px;
+
+                        if (framebuffer[idx]) registers[0xF] = 1;
+                        framebuffer[idx] ^= 1;
+                    }
+                }
+            }
+            return;
+        }
+
+        if ((opcode & 0xF000) == 0x7000) { // ADD Vx, byte
+
+            uint8_t Vx = (opcode & 0x0F00) >> 8;
+            uint8_t add = opcode & 0x00FF;
+
+            logTimePrefix();
+            std::cout << "ADD " << unsigned(Vx) << ", " << unsigned(add) << '\n';
+
+            registers[Vx] += add;
+            return;
+        }
+
+        if ((opcode & 0xF0FF) == 0xF033) { // LD B, Vx
+
+            uint8_t Vx = (opcode & 0x0F00) >> 8;
+
+            logTimePrefix();
+            std::cout << "LD B, " << unsigned(Vx) << '\n';
+
+            memory[I] = registers[Vx] / 100;
+            memory[I + 1] = (registers[Vx] / 10) % 10;
+            memory[I + 2] = registers[Vx] % 10;
+            return;
+        }
+
+        if ((opcode & 0xF0FF) == 0xF065) { // LD Vx [I]
+            uint8_t Vx = (opcode & 0x0F00) >> 8;
+            logTimePrefix();
+            std::cout << "LD " << unsigned(Vx) << ", [I]\n";
+            for (unsigned int i = 0; i <= Vx; i++) {
+                registers[i] = memory[I + i];
+            }       
+            return;
+        }
+
+        if ((opcode & 0xF0FF) == 0xF029) { // Fx29: LD F, Vx
+            uint8_t Vx = (opcode & 0x0F00) >> 8;
+            logTimePrefix();
+            std::cout << "LD F, " << unsigned(Vx) << '\n';
+            I = FONTSET_START_ADDRESS + registers[Vx] * 5;
+            return;
+        }
+
+        if ((opcode & 0xF0FF) == 0xF015) { // Fx15: LD DT, Vx
+            uint8_t Vx = (opcode & 0x0F00) >> 8;
+            delayTimer = registers[Vx];
+            logTimePrefix();
+            std::cout << "LD DT, " << unsigned(Vx) << '\n';
+            return;
+        }
+
+        if ((opcode & 0xF0FF) == 0xF007) { // Fx07 - LD Vx, DT
+            uint8_t Vx = (opcode & 0x0F00) >> 8;
+            logTimePrefix();
+            std::cout << "LD " << unsigned(Vx) << ", " << "DT\n";
+            registers[Vx] = delayTimer;
+            return;
+        }
+
+        if ((opcode & 0xF000) == 0x3000) { // 3xkk - SE Vx, byte
+            // Skip next instruction if Vx != kk
+            uint8_t x = (opcode & 0x0F00) >> 8;
+            uint8_t byte = opcode & 0x00FF;
+
+            logTimePrefix();
+            std::cout << "SE V" << unsigned(x) << ", " << unsigned(byte) << '\n';
+
+            if (registers[x] != byte) {
+                PC += 2;
+            }
+            return;
+        }
+
+        if ((opcode & 0xF000) == 0xC000) { // Cxkk - RND Vx, byte
+            uint8_t x = (opcode & 0x0F00) >> 8;
+            uint8_t byte = opcode & 0x00FF;
+
+            logTimePrefix();
+            std::cout << "RND V" << unsigned(x) << ", " << byte << '\n';
+
+            registers[x] = (rng() % 256) & byte;
+            return;
+        }
+
+        if ((opcode & 0xF0FF) == 0xE0A1) { // ExA1 - SKNP Vx
+            uint8_t x = (opcode & 0x0F00) >> 8;
+            // TODO: set up the keyboard interaction
+            
+        }
+
+
         switch (opcode) {
 
         case 0x00E0: // CLS (clear the display)
+            logTimePrefix();
+            std::cout << "CLS\n";
             std::memset(framebuffer, 0, sizeof(framebuffer));
             break;
 
         case 0x00EE: // RET (return from a subroutine)
+            logTimePrefix();
+            std::cout << "RET\n";
             SP--;
             PC = stack[SP];
             break;
-
-
 
         default:
             std::cout << "Unimplemented opcode: 0x" << std::hex << std::setw(4)
@@ -122,7 +260,7 @@ public:
 
     void cycle() {
         uint16_t opcode = fetchOpCode();
-        std::cout << "Execute instruction: ";
+        //std::cout << "Execute instruction: ";
         printOpCode(std::cout, opcode);
         std::cout << '\n';
         PC += 2;
@@ -149,20 +287,8 @@ public:
             std::cout << "rom size = " << size << '\n';
 
             // Load the ROM contents into the Chip8's memory, starting at 0x200
-            for (long i = 0; i < size; i += 2) {
+            for (long i = 0; i < size; i++) {
                 memory[START_ADDRESS + i] = buffer[i];
-                memory[START_ADDRESS + i + 1] = buffer[i + 1];
-
-                uint16_t opcode = (memory[START_ADDRESS + i] << 8) | memory[START_ADDRESS + i + 1];
-
-                std::cout
-                    << "opcode[" << (i / 2) << "] = 0x"
-                    << std::hex
-                    << std::setw(4)
-                    << std::setfill('0')
-                    << opcode
-                    << std::dec
-                    << '\n';
             }
 
             // Free the buffer
@@ -178,7 +304,8 @@ int main() {
 
     Chip8 chip;
 
-    chip.loadRom("roms/IBM Logo.ch8");
+    //chip.loadRom("roms/IBM Logo.ch8");
+    chip.loadRom("roms/pong.ch8");
 
     const int CHIP8_WIDTH  = 64;
     const int CHIP8_HEIGHT = 32;
@@ -206,13 +333,15 @@ int main() {
     SDL_Event event;
 
     while (running) {
+        logTimePrefix();
+        std::cout << "running...\n";
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT)
                 running = false;
         }
 
-        // Run some CHIP-8 instructions
-        for (int i = 0; i < 10; i++) {
+        // Run CHIP-8 instructions
+        for (int i = 0; i < 1; i++) {
             std::cout << "cycle " << i << '\n';
             chip.cycle();
         }
@@ -224,8 +353,13 @@ int main() {
         // Draw pixels
         for (int y = 0; y < CHIP8_HEIGHT; y++) {
             for (int x = 0; x < CHIP8_WIDTH; x++) {
-                if (chip.framebuffer[y * CHIP8_WIDTH + x]) {
+                if (chip.framebuffer[y * CHIP8_WIDTH + x]) { // black
                     SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+                    SDL_Rect pixel = { x * SCALE, y * SCALE, SCALE, SCALE };
+                    SDL_RenderFillRect(renderer, &pixel);
+                }
+                else { // white
+                    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0);
                     SDL_Rect pixel = { x * SCALE, y * SCALE, SCALE, SCALE };
                     SDL_RenderFillRect(renderer, &pixel);
                 }
@@ -233,7 +367,7 @@ int main() {
         }
 
         SDL_RenderPresent(renderer);
-        SDL_Delay(16); // sleep time in milliseconds
+        SDL_Delay(10); // sleep time in milliseconds
     }
 
     SDL_DestroyRenderer(renderer);
