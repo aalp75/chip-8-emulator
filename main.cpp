@@ -16,15 +16,21 @@ class Chip8 {
 public: // set all to public for now
 
     // constant
-    static constexpr unsigned int PROGRAM_START_ADDRESS = 0x200; // (512);
-    static constexpr unsigned int FONTSET_START_ADDRESS = 0x50; // (80)
+    static constexpr uint16_t PROGRAM_START_ADDRESS = 0x200; // (512);
+    static constexpr uint16_t FONTSET_START_ADDRESS = 0x50; // (80)
 
-    static constexpr unsigned int FRAMEBUFFER_WIDTH  = 64;
-    static constexpr unsigned int FRAMEBUFER_HEIGHT = 32;
+    static constexpr uint16_t FRAMEBUFFER_WIDTH  = 64;
+    static constexpr uint16_t FRAMEBUFER_HEIGHT = 32;
 
-    static constexpr unsigned int FONTSET_SIZE = 80;
+    static constexpr uint16_t FONTSET_SIZE = 80;
 
     // fontset loaded at the begining of the memory
+    // it's on 1 byte but only the 4 first bits are used
+    // this is why second characters is only 0
+    // example: 
+    //   - 0xF0 = 0b11110000 --> ####
+    //   - 0x90 = 0b10010000 --> #..#
+    // it's possible to use different font (see https://github.com/mattmikolay/chip-8/issues/3)     
     static constexpr uint8_t fontset[FONTSET_SIZE] = {
         0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
         0x20, 0x60, 0x20, 0x20, 0x70, // 1
@@ -48,6 +54,7 @@ public: // set all to public for now
     uint8_t memory[4096];   // 4096 bytes of RAM
 
     uint16_t stack[16];     // Stack (16 bits because it's memory address)
+                            // Stack can also be implemented on the first bytes RAM
 
     uint16_t I;             // Pointer address
     uint16_t PC;            // Program counter (16 bits because 8 bits is too small)
@@ -58,6 +65,7 @@ public: // set all to public for now
 
     std::mt19937 rng;       // Random generator
 
+    // it should be 60 Hz (~60 fps)
     uint8_t framebuffer[FRAMEBUFFER_WIDTH * FRAMEBUFER_HEIGHT]; // Display Framebuffer Top-Left to Bottom-Right
 
     bool keyboard[16];      // Keyboard
@@ -67,14 +75,19 @@ public: // set all to public for now
 
 public:
 
-    Chip8() : PC(PROGRAM_START_ADDRESS), rng(42) {
-
+    Chip8() 
+    : PC(PROGRAM_START_ADDRESS)
+    , rng(42)
+    , I(0)
+    , SP(0)
+    , delayTimer(0)
+    , soundTimer(0)
+    {
         std::memset(registers, 0, sizeof(registers));
         std::memset(memory, 0, sizeof(memory));
         std::memset(stack, 0, sizeof(stack));
         std::memset(framebuffer, 0, sizeof(framebuffer));
         std::memset(keyboard, 0, sizeof(keyboard));
-        I = 0; SP = 0; delayTimer = 0; soundTimer = 0;
 
         // Load font at the beggining of the memory
         // between FONTSET_START_ADDRESS and PROGRAM_START_ADDRESS
@@ -88,6 +101,7 @@ public:
         return os;
     }
 
+    // fetch opcode on 2 bytes (e.g. 0x00E0)
     uint16_t fetchOpCode() const {
         uint16_t opcode = (memory[PC] << 8) | memory[PC + 1];
         return opcode;
@@ -101,7 +115,7 @@ public:
     void execute(uint16_t opcode) {
 
         if (opcode == 0x00E0) { // CLS (clear the display)
-            logTimePrefix();
+            logTimePrefix(); 
             std::cout << "CLS\n";
             std::memset(framebuffer, 0, sizeof(framebuffer));
             return;
@@ -155,6 +169,7 @@ public:
                 PC += 2;
             }
 
+            logTimePrefix();
             std::cout << "SNE V" << unsigned(x) << ", " << unsigned(byte) << '\n';
             return;
         }
@@ -166,6 +181,7 @@ public:
             if (registers[x] == registers[y]) {
                 PC += 2;
             }
+            logTimePrefix();
             std::cout << "SE V" << unsigned(x) << ", V" << unsigned(y) << '\n';
             return;
         }
@@ -196,6 +212,7 @@ public:
             uint8_t x = (opcode & 0x0F00) >> 8;
             uint8_t y = (opcode & 0x00F0) >> 4;
             registers[x] = registers[y];
+            logTimePrefix();
             std::cout << "LD V" << unsigned(x) << ", V" << unsigned(y) << '\n';
             return;
         }
@@ -205,6 +222,7 @@ public:
             uint8_t x = (opcode & 0x0F00) >> 8;
             uint8_t y = (opcode & 0x00F0) >> 4;
             registers[x] |= registers[y];
+            logTimePrefix();
             std::cout << "OR V" << unsigned(x) << ", V" << unsigned(y) << '\n';
             return;
         }
@@ -214,6 +232,7 @@ public:
             uint8_t x = (opcode & 0x0F00) >> 8;
             uint8_t y = (opcode & 0x00F0) >> 4;
             registers[x] &= registers[y];
+            logTimePrefix();
             std::cout << "AND V" << unsigned(x) << ", V" << unsigned(y) << '\n';
             return;
         }
@@ -223,6 +242,7 @@ public:
             uint8_t x = (opcode & 0x0F00) >> 8;
             uint8_t y = (opcode & 0x00F0) >> 4;
             registers[x] ^= registers[y];
+            logTimePrefix();
             std::cout << "XOR V" << unsigned(x) << ", V" << unsigned(y) << '\n';
             return;
         }
@@ -232,9 +252,10 @@ public:
             uint8_t y = (opcode & 0x00F0) >> 4;
 
             uint16_t sum = uint16_t(registers[x]) + uint16_t(registers[y]);
-            registers[0xF] = (sum > 0xFF) ? 1 : 0;
+            registers[0xF] = (sum > 0xFF) ? 1 : 0; // greater than 255
             registers[x] = uint8_t(sum & 0xFF);
 
+            logTimePrefix();
             std::cout << "ADD V" << unsigned(x) << ", V" << unsigned(y) << '\n';
             return;
             }
@@ -248,6 +269,8 @@ public:
                 registers[0xF] = 1;
             }
             registers[x] -= registers[y];
+
+            logTimePrefix();
             std::cout << "SUB V" << unsigned(x) << ", V" << unsigned(y) << '\n';
             return;
         }
@@ -262,6 +285,8 @@ public:
             }
 
             registers[x] = registers[x] >> 1;
+
+            logTimePrefix();
             std::cout << "SHR V" << unsigned(x) << " {, V" << unsigned(y) << "}\n";
             return;
         }
@@ -276,6 +301,7 @@ public:
             }
 
             registers[x] = registers[y] - registers[x];
+            logTimePrefix();
             std::cout << "SUBN V" << unsigned(x) << ", V" << unsigned(y) << "}\n";
             return;
         }
@@ -290,6 +316,7 @@ public:
             }
 
             registers[x] = registers[x] << 1;
+            logTimePrefix();
             std::cout << "SHL V" << unsigned(x) << " {, V" << unsigned(y) << "}\n";
             return;
         }
@@ -301,6 +328,7 @@ public:
             if (registers[x] != registers[y]) {
                 PC += 2;
             }
+            logTimePrefix();
             std::cout << "SNE V" << unsigned(x) << ", V" << unsigned(y) << '\n';
             return;
         }
@@ -360,7 +388,7 @@ public:
             if (keyboard[registers[x]]) {
                 PC += 2;
             }
-
+            logTimePrefix();
             std::cout << "SKP V" << unsigned(x) << '\n';
             return;            
         }
@@ -370,7 +398,7 @@ public:
             if (!keyboard[registers[x]]) {
                 PC += 2;
             }
-
+            logTimePrefix();
             std::cout << "SKNP V" << unsigned(x) << '\n';
             return;            
         }
@@ -385,13 +413,15 @@ public:
 
         if ((opcode & 0xF0FF) == 0xF00A) { // Fx0A - LD Vx, K
             uint8_t x = (opcode & 0x0F00) >> 8;
-            for (int i = 0; i < 16; i++) {
-                if (keyboard[i]) {
-                    registers[x] = i;
+            for (int key = 0; key < 16; key++) {
+                if (keyboard[key]) { // if it's pressed down
+                    registers[x] = key;
+                    logTimePrefix();
+                    std::cout << "LD V" << unsigned(x) << ", " << key << '\n';
                     return;
                 }
             }
-            PC -= 2;
+            PC -= 2; // decrement to reapeat the instruction
             return;
         }
 
@@ -467,7 +497,8 @@ public:
 
     void cycle() {
         uint16_t opcode = fetchOpCode();
-        //std::cout << "Execute instruction: ";
+        logTimePrefix();
+        std::cout << "Execute instruction ";
         printOpCode(std::cout, opcode);
         std::cout << '\n';
         PC += 2;
@@ -509,27 +540,31 @@ public:
     }
 };
 
-int keyboardMapping(SDL_Keycode k) {
-    switch (k) {
-        case SDLK_1: return 0x1;
-        case SDLK_2: return 0x2;
-        case SDLK_3: return 0x3;
-        case SDLK_4: return 0xC;
+// It's better to use scancode and keycode 
+// because it's not sensible to the keyboard region (e.g. QWERTY or AZERTY)
 
-        case SDLK_q: return 0x4;
-        case SDLK_w: return 0x5;
-        case SDLK_e: return 0x6;
-        case SDLK_r: return 0xD;
+int keyboardMapping(SDL_Scancode scancode) {
+    switch (scancode) {
+        case SDL_SCANCODE_1: return 0x1;
+        case SDL_SCANCODE_2: return 0x2;
+        case SDL_SCANCODE_3: return 0x3;
+        case SDL_SCANCODE_4: return 0xC;
 
-        case SDLK_a: return 0x7;
-        case SDLK_s: return 0x8;
-        case SDLK_d: return 0x9;
-        case SDLK_f: return 0xE;
+        case SDL_SCANCODE_Q: return 0x4;
+        case SDL_SCANCODE_W: return 0x5;
+        case SDL_SCANCODE_E: return 0x6;
+        case SDL_SCANCODE_R: return 0xD;
 
-        case SDLK_z: return 0xA;
-        case SDLK_x: return 0x0;
-        case SDLK_c: return 0xB;
-        case SDLK_v: return 0xF;
+        case SDL_SCANCODE_A: return 0x7;
+        case SDL_SCANCODE_S: return 0x8;
+        case SDL_SCANCODE_D: return 0x9;
+        case SDL_SCANCODE_F: return 0xE;
+
+        case SDL_SCANCODE_Z: return 0xA;
+        case SDL_SCANCODE_X: return 0x0;
+        case SDL_SCANCODE_C: return 0xB;
+        case SDL_SCANCODE_V: return 0xF;
+
         default: return -1;
     }
 }
@@ -540,8 +575,10 @@ int main() {
     Chip8 chip;
 
     //chip.loadRom("roms/IBM Logo.ch8");
-    chip.loadRom("roms/pong.ch8");
-    //chip.loadRom("roms/6-keypad.ch8");
+    //chip.loadRom("roms/pong.ch8");
+    //chip.loadRom("roms/6-keypad.ch8"); // TODO: Fix the 3. (Halting not working)
+    //chip.loadRom("roms/8-scrolling.ch8");
+    chip.loadRom("roms/bc_test.ch8");
 
     const int CHIP8_WIDTH  = 64;
     const int CHIP8_HEIGHT = 32;
@@ -569,20 +606,20 @@ int main() {
     SDL_Event event;
 
     while (running) {
-        logTimePrefix();
-        std::cout << "running...\n";
+        //logTimePrefix();
+        //std::cout << "running...\n";
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
                 running = false;
             }
 
             if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP) {
-                if (event.key.keysym.sym == SDLK_ESCAPE) {
-                    std::cout << "QUITING GAME\n";
+                if (event.key.keysym.scancode == SDL_SCANCODE_ESCAPE) {
+                    std::cout << "ESCAPE\n";
                     running = false;
                     break;
                 }
-                int key = keyboardMapping(event.key.keysym.sym);
+                int key = keyboardMapping(event.key.keysym.scancode);
                 if (key != -1) {
                     chip.keyboard[key] = (event.type == SDL_KEYDOWN) ? true : false;
                 }
@@ -593,7 +630,6 @@ int main() {
 
         // Run CHIP-8 instructions
         for (int i = 0; i < 10; i++) {
-            std::cout << "cycle " << i << '\n';
             chip.cycle();
         }
 
@@ -618,7 +654,7 @@ int main() {
         }
 
         SDL_RenderPresent(renderer);
-        SDL_Delay(16); // sleep time in milliseconds
+        SDL_Delay(16); // sleep time in milliseconds (16 ~ 1/60 seconds (60 Hz))
     }
 
     SDL_DestroyRenderer(renderer);
