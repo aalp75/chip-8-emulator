@@ -16,7 +16,7 @@ class Chip8 {
 public: // set all to public for now
 
     // constant
-    static constexpr unsigned int START_ADDRESS = 0x200; // (512);
+    static constexpr unsigned int PROGRAM_START_ADDRESS = 0x200; // (512);
     static constexpr unsigned int FONTSET_START_ADDRESS = 0x50; // (80)
 
     static constexpr unsigned int FRAMEBUFFER_WIDTH  = 64;
@@ -24,6 +24,7 @@ public: // set all to public for now
 
     static constexpr unsigned int FONTSET_SIZE = 80;
 
+    // fontset loaded at the begining of the memory
     static constexpr uint8_t fontset[FONTSET_SIZE] = {
         0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
         0x20, 0x60, 0x20, 0x20, 0x70, // 1
@@ -59,14 +60,24 @@ public: // set all to public for now
 
     uint8_t framebuffer[FRAMEBUFFER_WIDTH * FRAMEBUFER_HEIGHT]; // Display Framebuffer Top-Left to Bottom-Right
 
-    std::map<int, bool> keys;
+    bool keyboard[16];      // Keyboard
 
     bool waitingInput;
     uint8_t Rx;
 
 public:
 
-    Chip8() : PC(START_ADDRESS), rng(42) {
+    Chip8() : PC(PROGRAM_START_ADDRESS), rng(42) {
+
+        std::memset(registers, 0, sizeof(registers));
+        std::memset(memory, 0, sizeof(memory));
+        std::memset(stack, 0, sizeof(stack));
+        std::memset(framebuffer, 0, sizeof(framebuffer));
+        std::memset(keyboard, 0, sizeof(keyboard));
+        I = 0; SP = 0; delayTimer = 0; soundTimer = 0;
+
+        // Load font at the beggining of the memory
+        // between FONTSET_START_ADDRESS and PROGRAM_START_ADDRESS
         for (unsigned int i = 0; i < FONTSET_SIZE; i++) {
             memory[FONTSET_START_ADDRESS + i] = fontset[i];
         }
@@ -82,6 +93,11 @@ public:
         return opcode;
     }
 
+    /* 
+    * Chip-8 Set of Instructions
+    *
+    * http://devernay.free.fr/hacks/chip8/C8TECH10.HTM#2.3
+    */
     void execute(uint16_t opcode) {
 
         if (opcode == 0x00E0) { // CLS (clear the display)
@@ -214,18 +230,14 @@ public:
         if ((opcode & 0xF00F) == 0x8004) { // 8xy4 - ADD Vx, Vy
             uint8_t x = (opcode & 0x0F00) >> 8;
             uint8_t y = (opcode & 0x00F0) >> 4;
-            uint16_t res = static_cast<uint16_t>(registers[x]) + static_cast<uint16_t>(registers[y]);
-            
-            registers[0xF] = 0;
-            if (res > 255) {
-                res -= 255;
-                registers[0xF] = 1;
-            }
-            registers[x] = static_cast<int8_t>(res);
+
+            uint16_t sum = uint16_t(registers[x]) + uint16_t(registers[y]);
+            registers[0xF] = (sum > 0xFF) ? 1 : 0;
+            registers[x] = uint8_t(sum & 0xFF);
 
             std::cout << "ADD V" << unsigned(x) << ", V" << unsigned(y) << '\n';
             return;
-        }
+            }
 
         if ((opcode & 0xF00F) == 0x8005) { // 8xy5 - SUB Vx, Vy
             uint8_t x = (opcode & 0x0F00) >> 8;
@@ -345,7 +357,7 @@ public:
 
         if ((opcode & 0xF0FF) == 0xE09E) { // Ex9E - SKP Vx
             uint8_t x = (opcode & 0x0F00) >> 8;
-            if (keys[registers[x]]) {
+            if (keyboard[registers[x]]) {
                 PC += 2;
             }
 
@@ -355,7 +367,7 @@ public:
 
         if ((opcode & 0xF0FF) == 0xE0A1) { // ExA1 - SKNP Vx
             uint8_t x = (opcode & 0x0F00) >> 8;
-            if (!keys[registers[x]]) {
+            if (!keyboard[registers[x]]) {
                 PC += 2;
             }
 
@@ -373,9 +385,13 @@ public:
 
         if ((opcode & 0xF0FF) == 0xF00A) { // Fx0A - LD Vx, K
             uint8_t x = (opcode & 0x0F00) >> 8;
-
-            waitingInput = true;
-            Rx = x;
+            for (int i = 0; i < 16; i++) {
+                if (keyboard[i]) {
+                    registers[x] = i;
+                    return;
+                }
+            }
+            PC -= 2;
             return;
         }
 
@@ -403,8 +419,15 @@ public:
             return;
         }
 
+        if ((opcode & 0xF0FF) == 0xF029) { // Fx29: LD F, Vx
+            uint8_t x = (opcode & 0x0F00) >> 8;
+            logTimePrefix();
+            std::cout << "LD F, " << unsigned(x) << '\n';
+            I = FONTSET_START_ADDRESS + registers[x] * 5;
+            return;
+        }
 
-        if ((opcode & 0xF0FF) == 0xF033) { // LD B, Vx
+        if ((opcode & 0xF0FF) == 0xF033) { // Fx33 - LD B, Vx
 
             uint8_t x = (opcode & 0x0F00) >> 8;
 
@@ -417,30 +440,22 @@ public:
             return;
         }
 
-        if ((opcode & 0xF0FF) == 0xF065) { // LD Vx [I]
-            uint8_t x = (opcode & 0x0F00) >> 8;
-            logTimePrefix();
-            std::cout << "LD " << unsigned(x) << ", [I]\n";
-            for (unsigned int i = 0; i <= x; i++) {
-                registers[i] = memory[I + i];
-            }       
-            return;
-        }
-
-        if ((opcode & 0xF0FF) == 0xF029) { // Fx29: LD F, Vx
-            uint8_t x = (opcode & 0x0F00) >> 8;
-            logTimePrefix();
-            std::cout << "LD F, " << unsigned(x) << '\n';
-            I = FONTSET_START_ADDRESS + registers[x] * 5;
-            return;
-        }
-
         if ((opcode & 0xF0FF) == 0xF055) { // Fx55 - LD [I], Vx
             uint8_t x = (opcode & 0x0F00) >> 8;
             logTimePrefix();
             std::cout << "LD [I], V" << unsigned(x) << '\n';
             for (unsigned int i = 0; i <= x; i++) {
                 memory[I + i] = registers[i];
+            }       
+            return;
+        }
+
+        if ((opcode & 0xF0FF) == 0xF065) { // Fx65 - LD Vx [I]
+            uint8_t x = (opcode & 0x0F00) >> 8;
+            logTimePrefix();
+            std::cout << "LD " << unsigned(x) << ", [I]\n";
+            for (unsigned int i = 0; i <= x; i++) {
+                registers[i] = memory[I + i];
             }       
             return;
         }
@@ -457,6 +472,10 @@ public:
         std::cout << '\n';
         PC += 2;
         execute(opcode);
+
+        if (delayTimer > 0) {
+            delayTimer--;
+        }
     }
 
     // load road into memory
@@ -480,7 +499,7 @@ public:
 
             // Load the ROM contents into the Chip8's memory, starting at 0x200
             for (long i = 0; i < size; i++) {
-                memory[START_ADDRESS + i] = buffer[i];
+                memory[PROGRAM_START_ADDRESS + i] = buffer[i];
             }
 
             // Free the buffer
@@ -518,12 +537,11 @@ int keyboardMapping(SDL_Keycode k) {
 
 int main() {
 
-
     Chip8 chip;
 
     //chip.loadRom("roms/IBM Logo.ch8");
-    //chip.loadRom("roms/pong.ch8");
-    chip.loadRom("roms/6-keypad.ch8");
+    chip.loadRom("roms/pong.ch8");
+    //chip.loadRom("roms/6-keypad.ch8");
 
     const int CHIP8_WIDTH  = 64;
     const int CHIP8_HEIGHT = 32;
@@ -566,13 +584,7 @@ int main() {
                 }
                 int key = keyboardMapping(event.key.keysym.sym);
                 if (key != -1) {
-                    chip.keys[key] = (event.type == SDL_KEYDOWN) ? true : false;
-
-                    if (chip.waitingInput) {
-                        chip.registers[chip.Rx] = key;
-                        chip.waitingInput = false;
-                        chip.PC += 2;
-                    }
+                    chip.keyboard[key] = (event.type == SDL_KEYDOWN) ? true : false;
                 }
             }
         }
@@ -580,7 +592,7 @@ int main() {
         if (!running) break;
 
         // Run CHIP-8 instructions
-        for (int i = 0; i < 20; i++) {
+        for (int i = 0; i < 10; i++) {
             std::cout << "cycle " << i << '\n';
             chip.cycle();
         }
@@ -606,7 +618,7 @@ int main() {
         }
 
         SDL_RenderPresent(renderer);
-        SDL_Delay(10); // sleep time in milliseconds
+        SDL_Delay(16); // sleep time in milliseconds
     }
 
     SDL_DestroyRenderer(renderer);
