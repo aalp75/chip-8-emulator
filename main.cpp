@@ -9,7 +9,9 @@
 #include <ctime>
 #include <chrono>
 #include <map>
+#include <thread>
 #include "log.cpp"
+#include "font.h"
 
 class Chip8 {
 
@@ -21,34 +23,6 @@ public: // set all to public for now
 
     static constexpr uint16_t FRAMEBUFFER_WIDTH  = 64;
     static constexpr uint16_t FRAMEBUFER_HEIGHT = 32;
-
-    static constexpr uint16_t FONTSET_SIZE = 80;
-
-    // fontset loaded at the begining of the memory
-    // it's on 1 byte but only the 4 first bits are used
-    // this is why second characters is only 0
-    // example: 
-    //   - 0xF0 = 0b11110000 --> ####
-    //   - 0x90 = 0b10010000 --> #..#
-    // it's possible to use different font (see https://github.com/mattmikolay/chip-8/issues/3)     
-    static constexpr uint8_t fontset[FONTSET_SIZE] = {
-        0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
-        0x20, 0x60, 0x20, 0x20, 0x70, // 1
-        0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
-        0xF0, 0x10, 0xF0, 0x10, 0xF0, // 3
-        0x90, 0x90, 0xF0, 0x10, 0x10, // 4
-        0xF0, 0x80, 0xF0, 0x10, 0xF0, // 5
-        0xF0, 0x80, 0xF0, 0x90, 0xF0, // 6
-        0xF0, 0x10, 0x20, 0x40, 0x40, // 7
-        0xF0, 0x90, 0xF0, 0x90, 0xF0, // 8
-        0xF0, 0x90, 0xF0, 0x10, 0xF0, // 9
-        0xF0, 0x90, 0xF0, 0x90, 0x90, // A
-        0xE0, 0x90, 0xE0, 0x90, 0xE0, // B
-        0xF0, 0x80, 0x80, 0x80, 0xF0, // C
-        0xE0, 0x90, 0x90, 0x90, 0xE0, // D
-        0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
-        0xF0, 0x80, 0xF0, 0x80, 0x80  // F
-    };
 
     uint8_t registers[16];  // 16 1 byte registers
     uint8_t memory[4096];   // 4096 bytes of RAM
@@ -73,15 +47,19 @@ public: // set all to public for now
     bool waitingInput;
     uint8_t Rx;
 
+    bool updateDisplayFlag = false; // flag to update display
+    int pressedKey = -1; // used for Fx0A
+
 public:
 
-    Chip8() 
+    Chip8()
     : PC(PROGRAM_START_ADDRESS)
     , rng(42)
     , I(0)
     , SP(0)
     , delayTimer(0)
     , soundTimer(0)
+    , updateDisplayFlag(false)
     {
         std::memset(registers, 0, sizeof(registers));
         std::memset(memory, 0, sizeof(memory));
@@ -91,8 +69,8 @@ public:
 
         // Load font at the beggining of the memory
         // between FONTSET_START_ADDRESS and PROGRAM_START_ADDRESS
-        for (unsigned int i = 0; i < FONTSET_SIZE; i++) {
-            memory[FONTSET_START_ADDRESS + i] = fontset[i];
+        for (unsigned int i = 0; i < chip8Font::FONTSET_SIZE; i++) {
+            memory[FONTSET_START_ADDRESS + i] = chip8Font::fontset[i];
         }
     }
 
@@ -118,6 +96,7 @@ public:
             logTimePrefix(); 
             std::cout << "CLS\n";
             std::memset(framebuffer, 0, sizeof(framebuffer));
+            updateDisplayFlag = true;
             return;
         }
 
@@ -187,11 +166,11 @@ public:
         }
 
         if ((opcode & 0xF000) == 0x6000) { // 6xkk - LD Vx, byte
-            uint8_t Vx = (opcode & 0xF00u) >> 8;
+            uint8_t x = (opcode & 0x0F00) >> 8;
             uint8_t byte = opcode & 0x00FF;
             logTimePrefix();
-            std::cout << "LD " << unsigned(Vx) << ", " << unsigned(byte) << '\n';
-            registers[Vx] = byte;
+            std::cout << "LD " << unsigned(x) << ", " << unsigned(byte) << '\n';
+            registers[x] = byte;
             return;
         }
 
@@ -265,7 +244,7 @@ public:
             uint8_t y = (opcode & 0x00F0) >> 4;
 
             registers[0xF] = 0;
-            if (registers[x] > registers[y]) {
+            if (registers[x] >= registers[y]) {
                 registers[0xF] = 1;
             }
             registers[x] -= registers[y];
@@ -296,7 +275,7 @@ public:
             uint8_t y = (opcode & 0x00F0) >> 4;
 
             registers[0xF] = 0;
-            if (registers[y] > registers[x]) {
+            if (registers[y] >= registers[x]) {
                 registers[0xF] = 1;
             }
 
@@ -344,7 +323,7 @@ public:
             uint8_t x = (opcode & 0x0F00) >> 8;
             uint8_t byte = opcode & 0x00FF;
 
-            logTimePrefix();
+            logTimePrefix(); 
             std::cout << "RND V" << unsigned(x) << ", " << byte << '\n';
 
             registers[x] = (rng() % 256) & byte;
@@ -380,6 +359,7 @@ public:
                     }
                 }
             }
+            updateDisplayFlag = true;
             return;
         }
 
@@ -413,15 +393,27 @@ public:
 
         if ((opcode & 0xF0FF) == 0xF00A) { // Fx0A - LD Vx, K
             uint8_t x = (opcode & 0x0F00) >> 8;
-            for (int key = 0; key < 16; key++) {
-                if (keyboard[key]) { // if it's pressed down
-                    registers[x] = key;
-                    logTimePrefix();
-                    std::cout << "LD V" << unsigned(x) << ", " << key << '\n';
-                    return;
+
+            if (pressedKey == -1) {
+                for (int key = 0; key < 16; key++) {
+                    if (keyboard[key]) {
+                        pressedKey = key;
+                        break;
+                    }
                 }
             }
-            PC -= 2; // decrement to reapeat the instruction
+
+            if (pressedKey != -1 && !keyboard[pressedKey]) {
+                registers[x] = pressedKey;
+
+                logTimePrefix();
+                std::cout << "LD V" << unsigned(x) << ", " << pressedKey << '\n';
+
+                pressedKey = -1;
+                return;
+            }
+
+            PC -= 2; // Decrement PC to repeat the instruction
             return;
         }
 
@@ -495,6 +487,11 @@ public:
         std::exit(1);
     }
 
+    void tick() {
+        if (delayTimer > 0) delayTimer--;
+        if (soundTimer > 0) soundTimer--;
+    }
+
     void cycle() {
         uint16_t opcode = fetchOpCode();
         logTimePrefix();
@@ -503,10 +500,6 @@ public:
         std::cout << '\n';
         PC += 2;
         execute(opcode);
-
-        if (delayTimer > 0) {
-            delayTimer--;
-        }
     }
 
     // load road into memory
@@ -538,9 +531,28 @@ public:
         }
         return true;
     }
+
+    bool updateDisplay() const {
+        return updateDisplayFlag;
+    }
+
+    void displayUpdated() {
+        updateDisplayFlag = false;
+    }
+
+    void printRegisters() const {
+        std::cout << "Registers:\n";
+        for (int i = 0; i < 16; i++) {
+            std::cout
+                << "V" << std::setw(2) << i
+                << " = ["
+                << std::setw(3) << std::right << unsigned(registers[i])
+                << "]\n";
+        }
+    }
 };
 
-// It's better to use scancode and keycode 
+// It's better to use scancode than keycode 
 // because it's not sensible to the keyboard region (e.g. QWERTY or AZERTY)
 
 int keyboardMapping(SDL_Scancode scancode) {
@@ -578,7 +590,8 @@ int main() {
     //chip.loadRom("roms/pong.ch8");
     //chip.loadRom("roms/6-keypad.ch8"); // TODO: Fix the 3. (Halting not working)
     //chip.loadRom("roms/8-scrolling.ch8");
-    chip.loadRom("roms/bc_test.ch8");
+    //chip.loadRom("roms/bc_test.ch8");
+    chip.loadRom("roms/br8kout.ch8");
 
     const int CHIP8_WIDTH  = 64;
     const int CHIP8_HEIGHT = 32;
@@ -605,7 +618,15 @@ int main() {
     bool running = true;
     SDL_Event event;
 
+    using clock = std::chrono::steady_clock;
+
+    const std::chrono::duration<double> tick = std::chrono::duration<double>(1.0 / 60.0);
+    auto nextTick = clock::now() + tick;
     while (running) {
+
+        chip.tick();
+        nextTick += tick;
+
         //logTimePrefix();
         //std::cout << "running...\n";
         while (SDL_PollEvent(&event)) {
@@ -633,28 +654,33 @@ int main() {
             chip.cycle();
         }
 
-        // Clear screen (black)
-        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-        SDL_RenderClear(renderer);
-
-        // Draw pixels
-        for (int y = 0; y < CHIP8_HEIGHT; y++) {
-            for (int x = 0; x < CHIP8_WIDTH; x++) {
-                if (chip.framebuffer[y * CHIP8_WIDTH + x]) { // black
-                    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
-                    SDL_Rect pixel = { x * SCALE, y * SCALE, SCALE, SCALE };
-                    SDL_RenderFillRect(renderer, &pixel);
-                }
-                else { // white
-                    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0);
-                    SDL_Rect pixel = { x * SCALE, y * SCALE, SCALE, SCALE };
-                    SDL_RenderFillRect(renderer, &pixel);
+        // Draw pixels if update
+        if (chip.updateDisplay()) {
+        //if (true) {
+            for (int y = 0; y < CHIP8_HEIGHT; y++) {
+                for (int x = 0; x < CHIP8_WIDTH; x++) {
+                    if (chip.framebuffer[y * CHIP8_WIDTH + x]) { // black
+                        SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+                        SDL_Rect pixel = { x * SCALE, y * SCALE, SCALE, SCALE };
+                        SDL_RenderFillRect(renderer, &pixel);
+                    }
+                    else { // white
+                        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+                        SDL_Rect pixel = { x * SCALE, y * SCALE, SCALE, SCALE };
+                        SDL_RenderFillRect(renderer, &pixel);
+                    }
                 }
             }
+            chip.displayUpdated();
         }
 
         SDL_RenderPresent(renderer);
-        SDL_Delay(16); // sleep time in milliseconds (16 ~ 1/60 seconds (60 Hz))
+        //SDL_Delay(16); // sleep time in milliseconds (16 ~ 1/60 seconds (60 Hz))
+
+        auto time = clock::now();
+        if (time < nextTick) {
+            std::this_thread::sleep_for(nextTick - time);
+        }
     }
 
     SDL_DestroyRenderer(renderer);
