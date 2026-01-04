@@ -1,3 +1,4 @@
 .vscode
 test.cpp
 *.out
+roms/GAMES*

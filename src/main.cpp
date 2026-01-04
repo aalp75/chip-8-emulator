@@ -10,7 +10,7 @@
 #include <chrono>
 #include <map>
 #include <thread>
-#include "log.cpp"
+#include "log.h"
 #include "font.h"
 
 class Chip8 {
@@ -22,10 +22,12 @@ public: // set all to public for now
     static constexpr uint16_t FONTSET_START_ADDRESS = 0x50; // (80)
 
     static constexpr uint16_t FRAMEBUFFER_WIDTH  = 64;
-    static constexpr uint16_t FRAMEBUFER_HEIGHT = 32;
+    static constexpr uint16_t FRAMEBUFFER_HEIGHT = 32;
+
+    static constexpr uint16_t MEMORY_SIZE = 4096;
 
     uint8_t registers[16];  // 16 1 byte registers
-    uint8_t memory[4096];   // 4096 bytes of RAM
+    uint8_t memory[MEMORY_SIZE];   // 4096 bytes of RAM
 
     uint16_t stack[16];     // Stack (16 bits because it's memory address)
                             // Stack can also be implemented on the first bytes RAM
@@ -40,7 +42,7 @@ public: // set all to public for now
     std::mt19937 rng;       // Random generator
 
     // it should be 60 Hz (~60 fps)
-    uint8_t framebuffer[FRAMEBUFFER_WIDTH * FRAMEBUFER_HEIGHT]; // Display Framebuffer Top-Left to Bottom-Right
+    uint8_t framebuffer[FRAMEBUFFER_WIDTH * FRAMEBUFFER_HEIGHT]; // Display Framebuffer Top-Left to Bottom-Right
 
     bool keyboard[16];      // Keyboard
 
@@ -103,8 +105,20 @@ public:
         if (opcode == 0x00EE) { // RET (return from a subroutine)
             logTimePrefix();
             std::cout << "RET\n";
+            if (SP == 0) {
+                std::cout << "Stack pointer becomes negative\n";
+                std::exit(1);
+            }
             SP--;
             PC = stack[SP];
+            return;
+        }
+
+        // Instruction ignored on modern chip-8
+        if ((opcode & 0xF000) == 0x0000) { // SYS addr
+            uint16_t address = opcode & 0x0FFF;
+            logTimePrefix();
+            std::cout << "SYS " << address << '\n';
             return;
         }
 
@@ -118,6 +132,10 @@ public:
 
         if ((opcode & 0xF000) == 0x2000) { // 2nnn - CALL addr
             uint16_t address = opcode & 0x0FFF;
+            if (SP >= 16) {
+                std::cout << "Stack overflow\n";
+                std::exit(1);
+            }
             stack[SP] = PC;
             SP++;
             PC = address;
@@ -169,7 +187,7 @@ public:
             uint8_t x = (opcode & 0x0F00) >> 8;
             uint8_t byte = opcode & 0x00FF;
             logTimePrefix();
-            std::cout << "LD " << unsigned(x) << ", " << unsigned(byte) << '\n';
+            std::cout << "LD V" << unsigned(x) << ", " << unsigned(byte) << '\n';
             registers[x] = byte;
             return;
         }
@@ -319,6 +337,14 @@ public:
             return;
         }
 
+        if ((opcode & 0xF000) == 0xB000) { // Bnnn - JP, V0, addr
+
+            uint16_t address = opcode & 0x0FFF;
+            PC = registers[0] + address;
+            std::cout << "JP, V0, " << address << '\n';
+            return;
+        }
+
         if ((opcode & 0xF000) == 0xC000) { // Cxkk - RND Vx, byte
             uint8_t x = (opcode & 0x0F00) >> 8;
             uint8_t byte = opcode & 0x00FF;
@@ -365,7 +391,8 @@ public:
 
         if ((opcode & 0xF0FF) == 0xE09E) { // Ex9E - SKP Vx
             uint8_t x = (opcode & 0x0F00) >> 8;
-            if (keyboard[registers[x]]) {
+            uint8_t key = registers[x] & 0x0F;
+            if (keyboard[key]) {
                 PC += 2;
             }
             logTimePrefix();
@@ -375,7 +402,8 @@ public:
 
         if ((opcode & 0xF0FF) == 0xE0A1) { // ExA1 - SKNP Vx
             uint8_t x = (opcode & 0x0F00) >> 8;
-            if (!keyboard[registers[x]]) {
+            uint8_t key = registers[x] & 0x0F;
+            if (!keyboard[key]) {
                 PC += 2;
             }
             logTimePrefix();
@@ -505,30 +533,32 @@ public:
     // load road into memory
     bool loadRom(const char* filename) {
 
-        // Open the file as a stream of binary and move the file pointer to the end
         std::ifstream file(filename, std::ios::binary | std::ios::ate);
 
-        if (file.is_open())
-        {
-            // Get size of file and allocate a buffer to hold the contents
-            std::streampos size = file.tellg();
-            char* buffer = new char[size];
-
-            // Go back to the beginning of the file and fill the buffer
-            file.seekg(0, std::ios::beg);
-            file.read(buffer, size);
-            file.close();
-
-            std::cout << "rom size = " << size << '\n';
-
-            // Load the ROM contents into the Chip8's memory, starting at 0x200
-            for (long i = 0; i < size; i++) {
-                memory[PROGRAM_START_ADDRESS + i] = buffer[i];
-            }
-
-            // Free the buffer
-            delete[] buffer;
+        if (!file.is_open()) {
+            std::cerr << "Failed to open ROM:" << filename << "\n";
+            return false;
         }
+
+        std::streampos romSize = file.tellg();
+        int maxRomSize = MEMORY_SIZE - PROGRAM_START_ADDRESS;
+        if (romSize > maxRomSize) {
+            std::cout << "Rom is too large: " << romSize << " bytes (max is "
+                      << maxRomSize << ")\n";         
+            return false;
+        }
+
+        char* buffer = new char[romSize];
+
+        file.seekg(0, std::ios::beg);
+        file.read(buffer, romSize);
+        file.close();
+
+        for (long i = 0; i < romSize; i++) {
+            memory[PROGRAM_START_ADDRESS + i] = buffer[i];
+        }
+
+        delete[] buffer;
         return true;
     }
 
@@ -554,7 +584,6 @@ public:
 
 // It's better to use scancode than keycode 
 // because it's not sensible to the keyboard region (e.g. QWERTY or AZERTY)
-
 int keyboardMapping(SDL_Scancode scancode) {
     switch (scancode) {
         case SDL_SCANCODE_1: return 0x1;
@@ -581,23 +610,61 @@ int keyboardMapping(SDL_Scancode scancode) {
     }
 }
 
+constexpr int SAMPLE_RATE = 44100;
+constexpr int BEEP_FREQ   = 440;
+constexpr int AMPLITUDE   = 8000;
 
-int main() {
+struct AudioState {
+    bool* audioPlaying;
+    double* phase;
+};
+
+void audioCallback(void* userdata, Uint8* stream, int len) {
+    auto* st = static_cast<AudioState*>(userdata);
+    int16_t* buffer = reinterpret_cast<int16_t*>(stream);
+    int samples = len / int(sizeof(int16_t));
+
+    if (!(*st->audioPlaying)) {
+        std::memset(stream, 0, len);
+        return;
+    }
+
+    double& ph = *st->phase;
+    const double step = 2.0 * M_PI * double(BEEP_FREQ) / double(SAMPLE_RATE);
+
+    for (int i = 0; i < samples; i++) {
+        buffer[i] = (std::sin(ph) > 0.0) ? AMPLITUDE : -AMPLITUDE;
+        ph += step;
+        if (ph >= 2.0 * M_PI) ph -= 2.0 * M_PI;
+    }
+}
+
+
+int main(int argc, char* argv[]) {
 
     Chip8 chip;
 
-    //chip.loadRom("roms/IBM Logo.ch8");
-    //chip.loadRom("roms/pong.ch8");
-    //chip.loadRom("roms/6-keypad.ch8"); // TODO: Fix the 3. (Halting not working)
-    //chip.loadRom("roms/8-scrolling.ch8");
-    //chip.loadRom("roms/bc_test.ch8");
-    chip.loadRom("roms/br8kout.ch8");
+    //const char* rom = "roms/IBM Logo.ch8";
+    //const char* rom = "roms/pong.ch8";
+    //const char* rom = "roms/6-keypad.ch8";
+    //const char* rom = "roms/8-scrolling.ch8";
+    //const char* rom = "roms/bc_test.ch8";
+    //const char* rom = "roms/br8kout.ch8";
+    //const char* rom = "roms/test_opcode.ch8";
+    //const char* rom = "roms/Space Invaders.ch8";
+    //const char* rom = "roms/danm8ku.ch8";
+    const char* rom = "roms/GAMES/GAMES/BREAKOUT.ch8";
+    //const char* rom = "roms/7-beep.ch8";
+    //const char* rom = "roms/Breakout (Brix hack) [David Winter, 1997].ch8";
+    if (!chip.loadRom(rom)) {
+        return 0;
+    }
 
     const int CHIP8_WIDTH  = 64;
     const int CHIP8_HEIGHT = 32;
     const int SCALE = 20;
 
-    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) {
         std::cerr << "SDL_Init Error: " << SDL_GetError() << "\n";
         return 1;
     }
@@ -611,35 +678,78 @@ int main() {
         SDL_WINDOW_SHOWN
     );
 
+    if (!window) {
+        std::cerr << "SDL_CreateWindow Error: " << SDL_GetError() << "\n";
+        SDL_Quit();
+        return 1;
+    }
+
     SDL_Renderer* renderer = SDL_CreateRenderer(
         window, -1, SDL_RENDERER_ACCELERATED
     );
+    if (!renderer) {
+        std::cerr << "SDL_CreateRenderer Error: " << SDL_GetError() << "\n";
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+
+    // -- Audio Part --
+    bool audioPlaying = false;
+    double phase = 0.0;
+
+    SDL_AudioDeviceID audioDevice = 0;
+
+    SDL_AudioSpec audioSpec{};
+    audioSpec.freq = SAMPLE_RATE;
+    audioSpec.format = AUDIO_S16SYS;
+    audioSpec.channels = 1;
+    audioSpec.samples = 512;
+
+    AudioState audioState{ &audioPlaying, &phase };
+    audioSpec.userdata = &audioState;
+    audioSpec.callback = audioCallback;
+
+    audioDevice = SDL_OpenAudioDevice(nullptr, 0, &audioSpec, nullptr, 0);
+    if (!audioDevice) {
+        std::cerr << "SDL_OpenAudioDevice Error: " << SDL_GetError() << "\n";   
+    }
+    
+    SDL_PauseAudioDevice(audioDevice, 0);
 
     bool running = true;
     SDL_Event event;
 
-    using clock = std::chrono::steady_clock;
-
     const std::chrono::duration<double> tick = std::chrono::duration<double>(1.0 / 60.0);
-    auto nextTick = clock::now() + tick;
+    auto nextTick = std::chrono::steady_clock::now() + tick;
+
+    auto startTime = std::chrono::steady_clock::now();
+
+    int countInstruction = 0;
+    int countTick = 0;
+
     while (running) {
 
         chip.tick();
         nextTick += tick;
+        countTick++;
 
-        //logTimePrefix();
-        //std::cout << "running...\n";
+        if (audioDevice) SDL_LockAudioDevice(audioDevice);
+        audioPlaying = (chip.soundTimer > 0);
+        if (audioDevice) SDL_UnlockAudioDevice(audioDevice);
+
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
                 running = false;
             }
 
-            if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP) {
-                if (event.key.keysym.scancode == SDL_SCANCODE_ESCAPE) {
-                    std::cout << "ESCAPE\n";
+            if (event.type == SDL_KEYDOWN && event.key.keysym.scancode == SDL_SCANCODE_ESCAPE) {
+                    std::cout << "Quitting game!\n";
                     running = false;
                     break;
-                }
+            }
+
+            if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP) {
                 int key = keyboardMapping(event.key.keysym.scancode);
                 if (key != -1) {
                     chip.keyboard[key] = (event.type == SDL_KEYDOWN) ? true : false;
@@ -652,40 +762,53 @@ int main() {
         // Run CHIP-8 instructions
         for (int i = 0; i < 10; i++) {
             chip.cycle();
+            countInstruction++;
         }
 
-        // Draw pixels if update
+        // Draw pixels if frame buffer has been updated
         if (chip.updateDisplay()) {
-        //if (true) {
             for (int y = 0; y < CHIP8_HEIGHT; y++) {
                 for (int x = 0; x < CHIP8_WIDTH; x++) {
-                    if (chip.framebuffer[y * CHIP8_WIDTH + x]) { // black
+                    if (chip.framebuffer[y * CHIP8_WIDTH + x]) { // black pixel
                         SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
-                        SDL_Rect pixel = { x * SCALE, y * SCALE, SCALE, SCALE };
-                        SDL_RenderFillRect(renderer, &pixel);
                     }
-                    else { // white
-                        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-                        SDL_Rect pixel = { x * SCALE, y * SCALE, SCALE, SCALE };
-                        SDL_RenderFillRect(renderer, &pixel);
+                    else { // white pixel
+                        SDL_SetRenderDrawColor(renderer, 10, 10, 10, 255);
                     }
+                    SDL_Rect pixel = { x * SCALE, y * SCALE, SCALE, SCALE };
+                    SDL_RenderFillRect(renderer, &pixel);
                 }
             }
             chip.displayUpdated();
         }
 
         SDL_RenderPresent(renderer);
-        //SDL_Delay(16); // sleep time in milliseconds (16 ~ 1/60 seconds (60 Hz))
 
-        auto time = clock::now();
+        auto time = std::chrono::steady_clock::now();
         if (time < nextTick) {
             std::this_thread::sleep_for(nextTick - time);
         }
     }
 
+    if (audioDevice) {
+        SDL_LockAudioDevice(audioDevice);
+        audioPlaying = false;
+        SDL_UnlockAudioDevice(audioDevice);
+        SDL_CloseAudioDevice(audioDevice);
+    }
+
+
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();
+
+    auto endTime = std::chrono::steady_clock::now();
+
+    double elapsedSeconds = std::chrono::duration<double>(endTime - startTime).count();
+
+    std::cout << "Total time played: " << elapsedSeconds << " seconds.\n";
+    std::cout << "CPU Frequency: " << (0.0 + countInstruction) / elapsedSeconds << " IPS\n";
+    std::cout << "Frame Timer Frequency: " << (0.0 + countTick) / elapsedSeconds << "Hz \n";
 
     return 0;
 }
