@@ -1,16 +1,8 @@
-#include <SDL2/SDL.h>
-#include <cstdint>
-#include <iostream>
-#include <random>
-#include <fstream>
-#include <string>
-#include <iomanip>
-#include <cstring> // memset
-#include <ctime>
-#include <chrono>
-#include <map>
-#include <thread>
+#ifndef CHIP8_CHIP8_H
+#define CHIP8_CHIP8_H
+
 #include "font.hpp"
+#include <random>
 
 class Chip8 {
 
@@ -65,3 +57,5 @@ public:
     void displayUpdated();
     void printRegisters() const;
 };
+
+#endif

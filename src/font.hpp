@@ -1,6 +1,8 @@
 #ifndef CHIP8_FONT_H
 #define CHIP8_FONT_H
 
+#include <cstdint>
+
 namespace chip8Font {
 
 	static constexpr uint16_t FONTSET_SIZE = 80;

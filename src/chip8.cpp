@@ -1,3 +1,5 @@
+#include <cstring>
+#include <fstream>
 #include "chip8.hpp"
 #include "log.hpp"
 

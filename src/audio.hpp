@@ -1,4 +1,6 @@
-#pragma once
+#ifndef CHIP8_AUDIO_H
+#define CHIP8_ADUIO_H
+
 #include <cstdint>
 #include <SDL2/SDL_stdinc.h>
 #include <cstring>
@@ -13,3 +15,5 @@ struct AudioState {
 };
 
 void audioCallback(void* userdata, Uint8* stream, int len);
+
+#endif
