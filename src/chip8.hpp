@@ -17,8 +17,8 @@ public: // set all to public for now
 
     static constexpr uint16_t MEMORY_SIZE = 4096;
 
-    uint8_t registers[16];  // 16 1 byte registers
-    uint8_t memory[MEMORY_SIZE];   // 4096 bytes of RAM
+    uint8_t registers[16];          // 16 1 byte registers
+    uint8_t memory[MEMORY_SIZE];    // 4096 bytes of RAM
 
     uint16_t stack[16];     // Stack (16 bits because it's memory address)
                             // Stack can also be implemented on the first bytes RAM
@@ -35,7 +35,7 @@ public: // set all to public for now
     // it should be 60 Hz (~60 fps)
     uint8_t framebuffer[FRAMEBUFFER_WIDTH * FRAMEBUFFER_HEIGHT]; // Display Framebuffer Top-Left to Bottom-Right
 
-    bool keyboard[16];      // Keyboard
+    bool keyboard[16]; // Keyboard
 
     bool waitingInput;
     uint8_t Rx;
